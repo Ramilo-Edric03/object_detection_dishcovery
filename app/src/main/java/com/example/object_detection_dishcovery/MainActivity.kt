@@ -7,8 +7,13 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Bundle
 import android.util.Log
+import android.view.LayoutInflater
+import android.view.View
 import android.view.Window
 import android.widget.Button
+import android.widget.ImageButton
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -27,7 +32,9 @@ import com.example.object_detection_dishcovery.Constants.MODEL_PATH
 import com.example.object_detection_dishcovery.databinding.ActivityMainBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import kotlin.compareTo
+import com.example.object_detection_dishcovery.RecipeManager
+
+private val recipeManager = RecipeManager()
 
 class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     private lateinit var binding: ActivityMainBinding
@@ -70,36 +77,32 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     private fun setupScanButton() {
         binding.btnToggleScan.setOnClickListener {
             val isScanning = detector.toggleScanning()
-            updateScanButtonText(isScanning)
         }
 
-        // Initially set button text
-        updateScanButtonText(detector.isScanning())
-    }
-
-    private fun updateScanButtonText(isScanning: Boolean) {
-        binding.btnToggleScan.text = if (isScanning) "Stop Scanning" else "Start Scanning"
+        // Auto-start scanning when app opens
+        if (!detector.isScanning()) {
+            detector.startScanning()
+        }
     }
 
     private fun setupDataManagementButtons() {
         binding.btnClearData.setOnClickListener {
             detectionStorage.clearDetections()
-            Toast.makeText(this, "Detection data cleared", Toast.LENGTH_SHORT).show()
-            updateDetectionCountText()
+            Toast.makeText(this, "Ingredient data cleared", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnShowData.setOnClickListener {
-            showDetectionDataDialog()
+            showIngredientsDialog()
         }
 
-        updateDetectionCountText()
+        binding.btnHome.setOnClickListener {
+            detectionStorage.clearDetections()
+            Toast.makeText(this, "Ingredient data cleared", Toast.LENGTH_SHORT).show()
+        }
+
     }
 
-    private fun updateDetectionCountText() {
-        binding.tvDetectionCount.text = "Detections: ${detectionStorage.getCount()}"
-    }
-
-    private fun showDetectionDataDialog() {
+    private fun showIngredientsDialog() {
         // Get all detections and filter by confidence level
         val allDetections = detectionStorage.getAllDetections()
 
@@ -107,7 +110,7 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         val highConfidenceDetections = allDetections.filter { it.boundingBox.cnf >= 0.80f }
 
         if (highConfidenceDetections.isEmpty()) {
-            Toast.makeText(this, "No high confidence detections available", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No ingredients detected yet", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -129,36 +132,136 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         val uniqueDetections = uniqueDetectionsByClass.values.toList()
 
         if (uniqueDetections.isEmpty()) {
-            Toast.makeText(this, "No high confidence detections available", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No ingredients detected yet", Toast.LENGTH_SHORT).show()
             return
         }
 
-        // Create and show the dialog
-        val dialog = Dialog(this)
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        dialog.setContentView(R.layout.dialog_detections)
+        // Convert to ingredient data
+        val ingredients = uniqueDetections.map { detection ->
+            IngredientData(
+                name = detection.boundingBox.clsName,
+                detectionData = detection
+            )
+        }
 
-        // Set up the RecyclerView
-        val recyclerView = dialog.findViewById<RecyclerView>(R.id.detectionsRecyclerView)
-        recyclerView.layoutManager = LinearLayoutManager(this)
-        recyclerView.adapter = DetectionAdapter(uniqueDetections)
+        // Create and show the dialog
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dialog.setContentView(R.layout.dialog_ingredients)
 
         // Set up the close button
-        val closeButton = dialog.findViewById<Button>(R.id.closeButton)
+        val closeButton = dialog.findViewById<ImageButton>(R.id.btnCloseDialog)
         closeButton.setOnClickListener {
             dialog.dismiss()
         }
 
+        // Set up ingredients list
+        val container = dialog.findViewById<LinearLayout>(R.id.ingredientsContainer)
+        container.removeAllViews()
+
+        // Add ingredients to the container
+        val inflater = LayoutInflater.from(this)
+        for (ingredient in ingredients) {
+            val itemView = inflater.inflate(R.layout.item_ingredient, container, false)
+            val nameText = itemView.findViewById<TextView>(R.id.ingredientNameText)
+            nameText.text = ingredient.name
+            container.addView(itemView)
+        }
+
+        // Set up the action button
+        val actionButton = dialog.findViewById<Button>(R.id.btnRecommendRecipe)
+        actionButton.setOnClickListener {
+            Toast.makeText(this, "Finding recipes for your ingredients...", Toast.LENGTH_SHORT).show()
+            dialog.dismiss()
+
+            // Add this - call the new method to show recipes
+            showRecipesDialog(ingredients.map { it.name })
+        }
         // Show the dialog
         dialog.show()
 
         // Also log the data for debugging
-        Log.d(TAG, "Unique high confidence detections: ${uniqueDetections.size}")
-        uniqueDetections.forEach { detection ->
-            Log.d(TAG, "Detection: ${detection.boundingBox.clsName}, " +
-                    "Confidence: ${detection.boundingBox.cnf}, " +
-                    "Position: (${detection.boundingBox.cx}, ${detection.boundingBox.cy})")
+        Log.d(TAG, "Unique high confidence ingredients: ${ingredients.size}")
+        ingredients.forEach { ingredient ->
+            Log.d(TAG, "Ingredient: ${ingredient.name}, " +
+                    "Confidence: ${ingredient.detectionData.boundingBox.cnf}")
         }
+    }
+
+    private fun showRecipesDialog(detectedIngredients: List<String>) {
+        // Create and show the dialog
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dialog.setContentView(R.layout.dialog_recipes)
+
+        // Set up the close button
+        val closeButton = dialog.findViewById<ImageButton>(R.id.btnCloseRecipesDialog)
+        closeButton.setOnClickListener {
+            dialog.dismiss()
+        }
+
+        // Show which ingredients we're using
+        val ingredientsText = dialog.findViewById<TextView>(R.id.recipeIngredientsUsed)
+        ingredientsText.text = "Ingredients used: ${detectedIngredients.joinToString(", ")}"
+
+        // Find recipes that match our ingredients
+        val recipeMatches = recipeManager.findRecipesWithIngredients(detectedIngredients)
+
+        if (recipeMatches.isEmpty()) {
+            Toast.makeText(this, "No recipes found with these ingredients", Toast.LENGTH_SHORT).show()
+            dialog.dismiss()
+            return
+        }
+
+        // Set up RecyclerView
+        val recyclerView = dialog.findViewById<RecyclerView>(R.id.recipesRecyclerView)
+        recyclerView.layoutManager = LinearLayoutManager(this)
+
+        // Set up adapter with click listener for recipes
+        val adapter = RecipeAdapter(recipeMatches) { recipe ->
+            showRecipeDetailDialog(recipe)
+        }
+        recyclerView.adapter = adapter
+
+        // Show the dialog
+        dialog.show()
+
+        // Log for debugging
+        Log.d(TAG, "Found ${recipeMatches.size} recipes matching ingredients: ${detectedIngredients.joinToString(", ")}")
+    }
+
+    // Add this method to show recipe details
+    private fun showRecipeDetailDialog(recipe: RecipeData) {
+        // Create and show the dialog
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dialog.setContentView(R.layout.dialog_recipe_detail)
+
+        // Set up the close button
+        val closeButton = dialog.findViewById<ImageButton>(R.id.btnCloseRecipeDetailDialog)
+        closeButton.setOnClickListener {
+            dialog.dismiss()
+        }
+
+        // Set recipe title
+        val titleText = dialog.findViewById<TextView>(R.id.recipeDetailTitle)
+        titleText.text = recipe.name
+
+        // Set ingredients
+        val ingredientsText = dialog.findViewById<TextView>(R.id.recipeDetailIngredients)
+        val formattedIngredients = recipe.ingredients.joinToString("\n") { "• $it" }
+        ingredientsText.text = formattedIngredients
+
+        // Set instructions
+        val instructionsText = dialog.findViewById<TextView>(R.id.recipeDetailInstructions)
+        instructionsText.text = recipe.instructions
+
+        // Set prep time
+        val prepTimeText = dialog.findViewById<TextView>(R.id.recipeDetailPrepTime)
+        prepTimeText.text = "Preparation time: ${recipe.prepTime} minutes"
+
+        // Show the dialog
+        dialog.show()
     }
 
     private fun startCamera() {
@@ -274,6 +377,7 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         binding.overlay.invalidate()
     }
 
+
     override fun onDetect(boundingBoxes: List<BoundingBox>, inferenceTime: Long, frameWidth: Int, frameHeight: Int) {
         // Store detection data
         val currentTime = System.currentTimeMillis()
@@ -293,19 +397,17 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
                 setResults(boundingBoxes)
                 invalidate()
             }
-            // Update detection count
-            updateDetectionCountText()
         }
     }
 
     override fun onScanningStatusChanged(isScanning: Boolean) {
         runOnUiThread {
-            updateScanButtonText(isScanning)
             if (isScanning) {
-                Toast.makeText(this, "Scanning started", Toast.LENGTH_SHORT).show()
+                binding.btnToggleScan.setColorFilter(ContextCompat.getColor(this, android.R.color.holo_green_dark))
             } else {
-                Toast.makeText(this, "Scanning stopped", Toast.LENGTH_SHORT).show()
+                binding.btnToggleScan.setColorFilter(ContextCompat.getColor(this, android.R.color.darker_gray))
             }
         }
     }
 }
+
